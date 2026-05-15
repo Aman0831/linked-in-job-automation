@@ -1,0 +1,18 @@
+{
+  "name": "linkedin-job-automation",
+  "version": "1.0.0",
+  "description": "Automates LinkedIn job post search and sends application emails via Gmail",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev":   "HEADLESS=false node index.js"
+  },
+  "keywords": ["linkedin", "automation", "puppeteer", "gmail", "nodemailer", "job-search"],
+  "author": "Your Name",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv":     "^16.4.5",
+    "nodemailer": "^6.9.14",
+    "puppeteer":  "^22.8.2"
+  }
+}
