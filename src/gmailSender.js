@@ -113,8 +113,9 @@ async function composeEmail(job, tailoredBullets) {
 
   const text = `Dear ${job.posterName},
 
-I came across your LinkedIn post and am writing to submit my profile for the ${job.searchRole} (C2C) opportunity.
+Hope you are doing well! I came across your recent post on LinkedIn and it immediately caught my attention. I would love to be considered for this opportunity, as my background aligns strongly with what you are looking for.
 
+I am writing to formally express my interest in the position mentioned below.
 ────────────────────────────────────
 JOB POSTING DETAILS
 ────────────────────────────────────
@@ -123,9 +124,7 @@ Posted by : ${job.posterName}${job.posterTitle ? ' — ' + job.posterTitle : ''}
 Posted on : ${date}
 Post link : ${job.postUrl || 'N/A'}
 
-FULL JOB DESCRIPTION:
-${job.fullDescription}
-────────────────────────────────────
+
 
 MY RELEVANT EXPERIENCE:
 ${bulletLines.join('\n')}
@@ -147,8 +146,9 @@ CC: quinn@jpitstaffing.com, kim@jpitstaffing.com`;
 
 <p>Dear <strong>${escHtml(job.posterName)}</strong>${job.posterTitle ? ` <span style="color:#666;">(${escHtml(job.posterTitle)})</span>` : ''},</p>
 
-<p>I came across your LinkedIn post and am writing to submit my profile for the
-<strong>${escHtml(job.searchRole)} (C2C)</strong> opportunity.</p>
+<p>Hope you are doing well! I came across your recent post on LinkedIn and it immediately caught my attention. I would love to be considered for this opportunity, as my background aligns strongly with what you are looking for.</p>
+
+<p>I am writing to formally express my interest in the <strong>${escHtml(job.searchRole)} (C2C)</strong> position mentioned below.</p>
 
 <!-- Job Posting Card -->
 <div style="background:#f4f7fb;border-left:4px solid #0a66c2;padding:16px 20px;margin:18px 0;border-radius:4px;">
@@ -158,6 +158,8 @@ CC: quinn@jpitstaffing.com, kim@jpitstaffing.com`;
   <table style="border-collapse:collapse;width:100%;">
     <tr><td style="padding:4px 0;font-weight:bold;width:110px;color:#444;">Position:</td>
         <td style="padding:4px 0;"><strong>${escHtml(job.jobTitle)}</strong></td></tr>
+        <tr><td style="padding:4px 0;font-weight:bold;color:#444;">Type:</td>
+    <td style="padding:4px 0;">C2C Contract</td></tr>
     <tr><td style="padding:4px 0;font-weight:bold;color:#444;">Posted by:</td>
         <td style="padding:4px 0;">
           ${job.profileUrl ? `<a href="${escHtml(job.profileUrl)}" style="color:#0a66c2;">${escHtml(job.posterName)}</a>` : escHtml(job.posterName)}
@@ -173,14 +175,7 @@ CC: quinn@jpitstaffing.com, kim@jpitstaffing.com`;
         </td></tr>
   </table>
 
-  <!-- Full Job Description -->
-  <div style="margin-top:14px;">
-    <strong style="font-size:13px;color:#444;">Full Job Description:</strong>
-    <div style="background:#fff;border:1px solid #dde3ed;border-radius:4px;padding:14px 18px;margin-top:8px;font-size:14px;line-height:1.6;">
-      ${textToHtml(job.fullDescription)}
-    </div>
-  </div>
-</div>
+  
 
 <!-- Tailored Resume Points -->
 <div style="background:#f0faf0;border-left:4px solid #27ae60;padding:16px 20px;margin:18px 0;border-radius:4px;">
