@@ -150,7 +150,7 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
         const profileUrl = profileEl?.href || '';
 
         // ── Post URL ──────────────────────────────────────────────────────
-        // Search ALL anchors in the card for any LinkedIn post/activity link
+        // Strategy 1: search all anchors for any LinkedIn post/activity link
         const allAnchors = Array.from(card.querySelectorAll('a[href]'));
         const postLinkEl = allAnchors.find(a =>
           a.href && (
@@ -161,7 +161,20 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
             a.href.includes('urn:li:')
           )
         );
-        const postUrl = postLinkEl?.href || '';
+
+        // Strategy 2: time element is often wrapped in an anchor with the post URL
+        const timeAnchor = card.querySelector('time')?.closest('a');
+
+        // Strategy 3: look for data-urn or data-id attributes on the card itself
+        const urn = card.getAttribute('data-urn') ||
+                    card.getAttribute('data-id') ||
+                    card.querySelector('[data-urn]')?.getAttribute('data-urn') ||
+                    card.querySelector('[data-id]')?.getAttribute('data-id') || '';
+        const urnUrl = urn.includes('activity:')
+          ? `https://www.linkedin.com/feed/update/${urn}`
+          : '';
+
+        const postUrl = postLinkEl?.href || timeAnchor?.href || urnUrl || '';
 
         // ── Timestamp ─────────────────────────────────────────────────────
         const timeEl     = card.querySelector('time');
@@ -180,6 +193,9 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
           !l.includes('ago') && !l.match(/^\d+$/)
         ) || lines[0] || '(No title)';
 
+        // Debug: collect all hrefs found in card for logging
+        const allHrefs = allAnchors.map(a => a.href).filter(h => h && !h.includes('javascript'));
+
         return {
           jobTitle,
           fullDescription,
@@ -191,6 +207,7 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
           postUrl,
           postedAt,
           postedDate,
+          _debugHrefs: allHrefs.slice(0, 5),
         };
       }).filter(Boolean);
 
@@ -209,6 +226,13 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
   }
 
   posts = posts.map(p => ({ ...p, searchRole: detectRole(p.fullDescription) }));
+
+  // Debug: log postUrl status for first 5 unique posts
+  const seen = new Set();
+  posts.filter(p => !seen.has(p.posterName) && seen.add(p.posterName)).slice(0, 5).forEach(p => {
+    logger.info(`  🔗 postUrl for "${p.posterName}": ${p.postUrl || 'EMPTY'}`);
+    if (!p.postUrl) logger.info(`     hrefs found: ${(p._debugHrefs||[]).join(' | ') || 'none'}`);
+  });
 
   logger.info(`\n📊 Results:`);
   ROLES.forEach(r => logger.info(`   ${r}: ${posts.filter(p => p.searchRole === r).length}`));
