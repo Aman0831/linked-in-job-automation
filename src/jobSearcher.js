@@ -22,7 +22,7 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
   }
 
   logger.info(`Landed on: ${page.url()}`);
-  await sleep(5000);
+  await sleep(6000);
 
   logger.info('Scrolling to load posts...');
   for (let i = 0; i < 6; i++) {
@@ -33,6 +33,29 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
   await sleep(3000);
 
   logger.info('Extracting posts...');
+ const firstCardHtml = await page.evaluate(() => {
+  // Try every possible card container
+  const selectors = [
+    '.occludable-update',
+    'li.reusable-search__result-container',
+    '[data-chameleon-result-urn]',
+    '.search-results__list li',
+    '.feed-shared-update-v2',
+    'li[class*="result"]',
+    '[class*="search-result"]',
+    'div[class*="update"]',
+    'article',
+  ];
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el) return `FOUND WITH: ${sel}\n\n` + el.innerHTML;
+  }
+  // Last resort — dump entire body
+  return 'NO SELECTOR MATCHED — dumping body:\n\n' + document.body.innerHTML.slice(0, 50000);
+});
+require('fs').writeFileSync('card-debug.html', firstCardHtml);
+logger.info('📄 card-debug.html saved');
+
   let posts = [];
   try {
     posts = await page.evaluate((maxResults) => {
