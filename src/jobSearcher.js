@@ -150,11 +150,17 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
         const profileUrl = profileEl?.href || '';
 
         // ── Post URL ──────────────────────────────────────────────────────
-        const postLinkEl =
-          card.querySelector('a[href*="/posts/"]') ||
-          card.querySelector('a[href*="activity"]') ||
-          card.querySelector('a[href*="ugcPost"]') ||
-          card.querySelector('a[href*="feed/update"]');
+        // Search ALL anchors in the card for any LinkedIn post/activity link
+        const allAnchors = Array.from(card.querySelectorAll('a[href]'));
+        const postLinkEl = allAnchors.find(a =>
+          a.href && (
+            a.href.includes('/feed/update/') ||
+            a.href.includes('activity:') ||
+            a.href.includes('/posts/') ||
+            a.href.includes('ugcPost:') ||
+            a.href.includes('urn:li:')
+          )
+        );
         const postUrl = postLinkEl?.href || '';
 
         // ── Timestamp ─────────────────────────────────────────────────────
@@ -178,7 +184,7 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
           jobTitle,
           fullDescription,
           title:          fullDescription.slice(0, 120).replace(/\n+/g, ' '),
-          posterName: posterName.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' '),
+          posterName,
           posterTitle,
           profileUrl,
           recruiterEmail,
