@@ -1,11 +1,23 @@
 const logger = require('./logger');
 
-const ROLES = ['JAVA DEVELOPER', 'BUSINESS ANALYST', 'PROJECT MANAGER', 'DATA ANALYST'];
+// ── Read keywords dynamically from .env ──────────────────────────────────
+// Add SEARCH_KEYWORD_1, SEARCH_KEYWORD_2, SEARCH_KEYWORD_3 ... in .env
+function getRolesFromEnv() {
+  const roles = [];
+  let i = 1;
+  while (process.env[`SEARCH_KEYWORD_${i}`]) {
+    roles.push(process.env[`SEARCH_KEYWORD_${i}`].trim().toUpperCase());
+    i++;
+  }
+  return roles.length > 0 ? roles : ['MARKETING ANALYTICS LEAD'];
+}
+
+const ROLES = getRolesFromEnv();
 
 async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
-  const roleQuery = ROLES.map(r => `"${r}"`).join(' OR ');
-  const fullQuery = `(${roleQuery}) "C2C"`;
-  const searchUrl = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent(fullQuery)}&datePosted=past-24h&sortBy=date_posted`;
+  const roleQuery = ROLES.map(r => r).join(' OR ');
+  const fullQuery = `(${roleQuery})`;
+  const searchUrl = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent(fullQuery)}&datePosted=past-24h&sortBy=date_posted&geoUrn=%5B%22103644278%22%5D`;
 
   logger.info(`Search query: ${fullQuery}`);
 
@@ -25,138 +37,173 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
   await sleep(6000);
 
   logger.info('Scrolling to load posts...');
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 40; i++) {
     try { await page.evaluate(() => window.scrollBy(0, 800)); } catch(e) { break; }
-    await sleep(1200);
+    await sleep(1000);
   }
   try { await page.evaluate(() => window.scrollTo(0, 0)); } catch(e) {}
   await sleep(3000);
 
   logger.info('Extracting posts...');
-
   let posts = [];
+
   try {
     posts = await page.evaluate((maxResults) => {
       const EMAIL_REGEX = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
 
-      const selectors = [
-        '.search-results__list li',
-        'li.reusable-search__result-container',
-        '.reusable-search__result-container',
-        '[data-chameleon-result-urn]',
-        '.occludable-update',
-        '.feed-shared-update-v2',
-        'li[class*="result"]',
-        '[class*="search-result"]',
-      ];
+      // ── New selector strategy: find by structure not class names ──────────
+      // LinkedIn posts always contain action buttons (Like, Comment, Repost, Send)
+      // Find all elements that contain these action buttons — those are post cards
 
       let cards = [];
-      for (const sel of selectors) {
-        const found = Array.from(document.querySelectorAll(sel));
-        if (found.length > 0) { cards = found; break; }
-      }
 
+      // Strategy 1: find elements containing Like + Comment + Repost buttons
+      const allElements = Array.from(document.querySelectorAll('li, div, article'));
+      // Find smallest elements that contain Like+Comment+Repost
+      const candidates = allElements.filter(el => {
+        const text = el.innerText || '';
+        return (
+          text.includes('Like') &&
+          text.includes('Comment') &&
+          (text.includes('Repost') || text.includes('Send')) &&
+          text.length > 100 &&
+          text.length < 8000
+        );
+      });
+      // Keep only the smallest (most specific) elements — not parent wrappers
+      cards = candidates.filter(el => {
+        return !candidates.some(other => other !== el && el.contains(other));
+      });
+
+      // Strategy 2: fallback — find by data-view-name attribute
       if (cards.length === 0) {
-        cards = Array.from(document.querySelectorAll('div,li,article'))
+        cards = Array.from(document.querySelectorAll('[data-view-name]'))
           .filter(el => {
             const t = el.innerText || '';
-            return t.length > 100 && t.length < 5000 && t.includes('C2C');
+            return t.length > 100 && t.length < 8000;
           });
       }
 
-      return cards.slice(0, maxResults).map(card => {
+      // Strategy 3: last resort — find any li with enough text
+      if (cards.length === 0) {
+        cards = Array.from(document.querySelectorAll('li'))
+          .filter(el => {
+            const t = el.innerText || '';
+            return t.length > 150 && t.length < 8000 &&
+              !t.includes('vjs-') && !t.includes('menu-item');
+          });
+      }
+
+      // Remove duplicates (same text content)
+      const seen = new Set();
+      cards = cards.filter(el => {
+        const key = (el.innerText || '').slice(0, 100);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      cards = cards.slice(0, maxResults);
+      // cards found:  (logger not available in browser context)
+
+      return cards.map(card => {
+        // Expand see more
         try {
-          const btn = card.querySelector('[class*="see-more"],[class*="inline-show-more"]');
-          if (btn) btn.click();
+          const btns = card.querySelectorAll('button');
+          btns.forEach(btn => {
+            if (btn.innerText?.includes('more') || btn.innerText?.includes('See more')) {
+              btn.click();
+            }
+          });
         } catch(e) {}
 
         const fullDescription = card.innerText?.trim() || '';
-        if (fullDescription.length < 30) return null;
-        const lines = fullDescription.split('\n').map(l => l.trim()).filter(Boolean);
+        if (fullDescription.length < 50) return null;
 
-        // ── Poster name — try every possible selector ─────────────────────
-        const nameCandidates = [
-          // Standard feed selectors
-          card.querySelector('.update-components-actor__name span[aria-hidden="true"]'),
-          card.querySelector('.update-components-actor__name'),
-          card.querySelector('[class*="actor__name"] span[aria-hidden="true"]'),
-          card.querySelector('[class*="actor__name"]'),
-          // Profile link text
-          card.querySelector('a[href*="/in/"] span[aria-hidden="true"]'),
-          card.querySelector('a[href*="/in/"]'),
-          // Any bold/strong inside actor area
-          card.querySelector('[class*="actor"] strong'),
-          card.querySelector('[class*="actor"] b'),
-          // Fallback: first anchor with /in/ in href
-          ...Array.from(card.querySelectorAll('a[href*="/in/"]')),
-        ].filter(Boolean);
+        const lines = fullDescription.split('\n')
+          .map(l => l.trim())
+          .filter(Boolean);
 
-        // Pick first candidate that has real text
+        // ── Poster name ───────────────────────────────────────────────────
+        // Find the anchor tag linking to a LinkedIn profile
+        const profileLinks = Array.from(card.querySelectorAll('a[href*="/in/"]'));
         let posterName = '';
-        for (const el of nameCandidates) {
-          const text = el.innerText?.trim() || el.textContent?.trim() || '';
-          // Clean up — remove connection degree badges like "• 3rd+"
-          const cleaned = text.replace(/•\s*(1st|2nd|3rd)\+?/g, '').trim();
-          if (cleaned.length > 1 && cleaned.length < 80) {
+        let profileUrl = '';
+
+        for (const link of profileLinks) {
+          const text = (link.innerText || link.textContent || '').trim();
+          const cleaned = text.replace(/•\s*(1st|2nd|3rd)\+?/gi, '').trim();
+          if (cleaned.length > 1 && cleaned.length < 80 && !cleaned.includes('http')) {
             posterName = cleaned;
+            profileUrl = link.href;
             break;
           }
         }
 
-        // Last resort — extract name from profile URL
-        if (!posterName) {
-          const profileEl = card.querySelector('a[href*="/in/"]');
-          if (profileEl?.href) {
-            const match = profileEl.href.match(/\/in\/([^/?]+)/);
-            if (match) {
-              // Convert "john-doe-123" → "John Doe"
-              posterName = match[1]
-                .replace(/-\d+$/, '')        // remove trailing ID numbers
-                .split('-')
-                .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-                .join(' ');
-            }
+        // Fallback: extract from URL slug
+        if (!posterName && profileLinks.length > 0) {
+          const match = profileLinks[0].href.match(/\/in\/([^/?]+)/);
+          if (match) {
+            posterName = match[1]
+              .replace(/-\d+$/, '')
+              .split('-')
+              .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+              .join(' ');
+            profileUrl = profileLinks[0].href;
           }
         }
 
-        // Still nothing — use email username or "Hiring Manager"
+        // Fallback: email username
         if (!posterName) {
           const emails = fullDescription.match(EMAIL_REGEX) || [];
           if (emails[0]) {
-            // "john.smith@company.com" → "John Smith"
             const username = emails[0].split('@')[0].toLowerCase();
-            const genericNames = ['info','hr','careers','jobs','recruitment','hiring','admin','contact','hello','support','noreply','no-reply'];
-            if (genericNames.includes(username)) {
-              posterName = 'Hiring Team';
-            } else {
-              posterName = username
-                .replace(/[._]/g, ' ')
-                .split(' ')
-                .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-                .join(' ');
-            }
+            const generic = ['info','hr','careers','jobs','recruitment','hiring','admin','contact','hello','support'];
+            posterName = generic.includes(username) ? 'Hiring Team' :
+              username.replace(/[._]/g,' ').split(' ')
+                .map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
           } else {
             posterName = 'Hiring Manager';
           }
         }
 
-        // ── Poster title ──────────────────────────────────────────────────
-        const posterTitleEl =
-          card.querySelector('[class*="actor__description"]') ||
-          card.querySelector('[class*="actor__subtitle"]');
-        const posterTitle = posterTitleEl?.innerText?.trim() || '';
+        // Capitalize
+        posterName = posterName.split(' ')
+          .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+          .join(' ');
 
-        // ── Profile URL ───────────────────────────────────────────────────
-        const profileEl  = card.querySelector('a[href*="/in/"]');
-        const profileUrl = profileEl?.href || '';
+        // ── Poster title ──────────────────────────────────────────────────
+        // Usually the line right after the poster name in the post header
+        let posterTitle = '';
+        const nameIdx = lines.findIndex(l =>
+          l.toLowerCase().includes(posterName.toLowerCase().split(' ')[0])
+        );
+        if (nameIdx >= 0 && nameIdx + 1 < lines.length) {
+          const nextLine = lines[nameIdx + 1];
+          if (nextLine.length < 100 && !nextLine.includes('@') &&
+              !nextLine.match(/^\d/) && !nextLine.includes('Like')) {
+            posterTitle = nextLine;
+          }
+        }
 
         // ── Post URL ──────────────────────────────────────────────────────
-        const postLinkEl =
-          card.querySelector('a[href*="/posts/"]') ||
-          card.querySelector('a[href*="activity"]') ||
-          card.querySelector('a[href*="ugcPost"]') ||
-          card.querySelector('a[href*="feed/update"]');
-        const postUrl = postLinkEl?.href || '';
+        const allLinks = Array.from(card.querySelectorAll('a[href]'))
+          .map(a => a.href)
+          .filter(h => h && h.startsWith('http'));
+
+        const postUrl =
+          allLinks.find(h => h.includes('/posts/')) ||
+          allLinks.find(h => h.includes('ugcPost')) ||
+          allLinks.find(h => h.includes('activity') && h.includes('linkedin')) ||
+          allLinks.find(h => h.includes('feed/update')) ||
+          allLinks.find(h =>
+            h.includes('linkedin.com') &&
+            !h.includes('/in/') &&
+            !h.includes('/company/') &&
+            !h.includes('/school/') &&
+            !h.includes('linkedin.com/search') &&
+            !h.includes('linkedin.com/feed?')
+          ) || '';
 
         // ── Timestamp ─────────────────────────────────────────────────────
         const timeEl     = card.querySelector('time');
@@ -167,12 +214,13 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
         const emails         = fullDescription.match(EMAIL_REGEX) || [];
         const recruiterEmail = emails[0] || null;
 
-        // ── Job title — skip UI noise ─────────────────────────────────────
+        // ── Job title ─────────────────────────────────────────────────────
+        const skipWords = ['like','comment','repost','send','follow','connect','ago','just now','3rd','2nd','1st'];
         const jobTitle = lines.find(l =>
           l.length > 15 &&
-          !l.match(/^(Like|Comment|Repost|Send|Follow|Connect|\d+\s*(repost|like|comment))/i) &&
-          !l.includes('3rd+') && !l.includes('2nd+') && !l.includes('1st+') &&
-          !l.includes('ago') && !l.match(/^\d+$/)
+          !skipWords.some(w => l.toLowerCase().startsWith(w)) &&
+          !l.match(/^\d+$/) &&
+          !l.includes('•')
         ) || lines[0] || '(No title)';
 
         return {
@@ -209,7 +257,7 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
   ROLES.forEach(r => logger.info(`   ${r}: ${posts.filter(p => p.searchRole === r).length}`));
   logger.info(`   Total: ${posts.length}\n`);
   posts.forEach((p, i) =>
-    logger.info(`  ${i+1}. [${p.searchRole}] "${p.posterName}" — "${p.jobTitle.slice(0,40)}" | email: ${p.recruiterEmail || 'none'}`)
+    logger.info(`  ${i+1}. [${p.searchRole}] "${p.posterName}" — "${p.jobTitle.slice(0,40)}" | email: ${p.recruiterEmail || 'none'} | url: ${p.postUrl ? '✅' : '❌'}`)
   );
 
   await page.close().catch(() => {});
@@ -218,10 +266,11 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
 
 function detectRole(text) {
   const t = text.toUpperCase();
-  if (t.includes('JAVA'))             return 'JAVA DEVELOPER';
-  if (t.includes('BUSINESS ANALYST')) return 'BUSINESS ANALYST';
-  if (t.includes('PROJECT MANAGER'))  return 'PROJECT MANAGER';
-  if (t.includes('DATA ANALYST'))     return 'DATA ANALYST';
+  // Check each role from .env in order — longest match first
+  const sorted = [...ROLES].sort((a, b) => b.length - a.length);
+  for (const role of sorted) {
+    if (t.includes(role)) return role;
+  }
   return 'GENERAL';
 }
 

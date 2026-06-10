@@ -12,53 +12,38 @@ const path       = require('path');
 const fs         = require('fs');
 const logger     = require('./logger');
 
-const CC_EMAILS  = process.env.GMAIL_EMAIL;   // candidate's own email
-const BCC_EMAIL  = 'kim@jpitstaffing.com';
-const TEAM_LEAD  = 'quinn@jpitstaffing.com';
+const CC_EMAIL  = process.env.CC_EMAIL  || null;
+const BCC_EMAIL = process.env.BCC_EMAIL || 'kim@jpitstaffing.com';
+const TEAM_LEAD = process.env.TEAM_LEAD_EMAIL || 'quinn@jpitstaffing.com';
 
-// ── Role → Candidate mapping ──────────────────────────────────────────────
-const ROLE_CANDIDATE = {
-  'JAVA DEVELOPER':   {
-    name:     process.env.CANDIDATE_NAME  || 'Aman Kumar',
-    email:    process.env.CANDIDATE_EMAIL || process.env.GMAIL_EMAIL,
-    phone:    process.env.CANDIDATE_PHONE || '+1-000-000-0000',
-    linkedin: process.env.CANDIDATE_LINKEDIN || 'linkedin.com/in/amankumar',
-    location: process.env.CANDIDATE_LOCATION || 'New Jersey, USA',
-    visa:     process.env.CANDIDATE_VISA || 'H1B / GC EAD',
-    experience: '8+ Years',
-    resume:   path.resolve('./assets/Aman_Kumar_Resume.pdf'),
-  },
-  'BUSINESS ANALYST': {
-    name:     'Karan Mehta',
-    email:    process.env.KARAN_EMAIL    || 'karan.mehta@email.com',
-    phone:    '+1-732-555-0101',
-    linkedin: 'linkedin.com/in/karanmehta',
-    location: 'Edison, NJ',
-    visa:     'H1B / GC EAD',
-    experience: '7+ Years',
-    resume:   path.resolve('./assets/Karan_Mehta_Resume.pdf'),
-  },
-  'PROJECT MANAGER':  {
-    name:     'Sunny Patel',
-    email:    process.env.SUNNY_EMAIL    || 'sunny.patel@email.com',
-    phone:    '+1-609-555-0202',
-    linkedin: 'linkedin.com/in/sunnypatel',
-    location: 'Princeton, NJ',
-    visa:     'H1B / GC EAD',
-    experience: '9+ Years',
-    resume:   path.resolve('./assets/Sunny_Patel_Resume.pdf'),
-  },
-  'DATA ANALYST':     {
-    name:     'Snehal Desai',
-    email:    process.env.SNEHAL_EMAIL   || 'snehal.desai@email.com',
-    phone:    '+1-201-555-0303',
-    linkedin: 'linkedin.com/in/snehaldesai',
-    location: 'Jersey City, NJ',
-    visa:     'H1B / GC EAD',
-    experience: '6+ Years',
-    resume:   path.resolve('./assets/Snehal_Desai_Resume.pdf'),
-  },
-};
+// ── Candidate built from .env — change .env, no code changes needed ───────
+function getCandidateFromEnv() {
+  return {
+    name:       process.env.CANDIDATE_NAME     || 'Candidate',
+    email:      process.env.CANDIDATE_EMAIL    || process.env.GMAIL_EMAIL,
+    phone:      process.env.CANDIDATE_PHONE    || '',
+    linkedin:   process.env.CANDIDATE_LINKEDIN || '',
+    location:   process.env.CANDIDATE_LOCATION || '',
+    visa:       process.env.CANDIDATE_VISA     || '',
+    experience: process.env.CANDIDATE_EXPERIENCE || '',
+    salary:     process.env.CANDIDATE_SALARY   || 'Open / As per market rate',
+    resume:     path.resolve(`./assets/${process.env.CANDIDATE_RESUME || 'resume.pdf'}`),
+  };
+}
+
+// Single candidate for all roles — pulled fresh from .env on each run
+function getRoleCandidate() {
+  const candidate = getCandidateFromEnv();
+  const roles = [];
+  let i = 1;
+  while (process.env[`SEARCH_KEYWORD_${i}`]) {
+    roles.push(process.env[`SEARCH_KEYWORD_${i}`].trim().toUpperCase());
+    i++;
+  }
+  const map = { 'GENERAL': candidate };
+  roles.forEach(r => { map[r] = candidate; });
+  return map;
+}
 
 function createTransporter() {
   if (process.env.GMAIL_REFRESH_TOKEN) {
@@ -127,44 +112,83 @@ async function tailorProfessionalSummary(jobDescription, candidate, searchRole) 
   }
 }
 
-// ── Inject AI summary into resume PDF using a cover page approach ─────────
-// Since we can't edit PDFs easily, we create a text file with the summary
-// and attach it alongside the resume so recruiter sees the tailored intro
+// ── AI: Extract missing skills from job description ───────────────────────
+async function extractMissingSkills(jobDescription, candidateName) {
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 200,
+        messages: [{
+          role: 'user',
+          content: `Extract ONLY the specific technical skills, tools, and platforms mentioned in this job description that a marketing analytics professional might need. Return ONLY a comma-separated list of skills (max 8), no explanations. Focus on tools, software, platforms, and technical skills. If no specific skills are mentioned return empty string.\n\nJob Description:\n${jobDescription.slice(0, 2000)}`
+        }]
+      })
+    });
+    const data = await response.json();
+    return data.content?.[0]?.text?.trim() || '';
+  } catch(e) {
+    logger.warn(`AI skill extraction failed: ${e.message}`);
+    return '';
+  }
+}
+
+// ── Build tailored resume PDF using Python script ─────────────────────────
 async function buildTailoredResumeAttachment(job, candidate, tailoredSummary) {
   const resumePath = candidate.resume;
 
   if (!fs.existsSync(resumePath)) {
-    logger.warn(`Resume not found: ${resumePath}`);
+    logger.warn(`Resume missing for ${candidate.name}: ${resumePath} — skipping`);
     return [];
   }
 
-  const attachments = [
-    { filename: `${candidate.name.replace(/ /g,'_')}_Resume.pdf`, path: resumePath }
-  ];
+  // Extract missing skills from job description
+  logger.info(`🔍 Extracting missing skills from job description...`);
+  const newSkills = await extractMissingSkills(job.fullDescription, candidate.name);
+  if (newSkills) logger.info(`   New skills to add: ${newSkills}`);
 
-  // If we got a tailored summary, attach it as a small cover note
-  if (tailoredSummary) {
-    const summaryText =
-`TAILORED PROFESSIONAL SUMMARY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Candidate : ${candidate.name}
-Role      : ${job.searchRole} (C2C Contract)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // Fallback summary if AI returns null
+  const summaryToUse = tailoredSummary ||
+    `${candidate.name} is a results-driven marketing professional with ${candidate.experience || '3+'} years of experience in digital marketing and analytics. Skilled in campaign optimization, data-driven strategy, and cross-functional collaboration. Available immediately and authorized to work in the USA.`;
 
-${tailoredSummary}
+  logger.info(`📝 Summary: ${summaryToUse.slice(0, 80)}...`);
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Please refer to the attached resume for full details.
-`;
-    const summaryPath = path.resolve(`./assets/summary_${candidate.name.replace(/ /g,'_')}_temp.txt`);
-    fs.writeFileSync(summaryPath, summaryText);
-    attachments.push({
-      filename: `${candidate.name.replace(/ /g,'_')}_Summary.txt`,
-      path: summaryPath
-    });
+  // Build tailored resume path
+  const baseName    = path.basename(resumePath, '.pdf');
+  const tailoredPath = path.resolve(`./assets/${baseName}_Tailored.pdf`);
+
+  // Call Python script to rebuild resume with new summary + skills
+  try {
+    const { spawnSync } = require('child_process');
+    const scriptPath = path.resolve('./updateResume.py');
+
+    if (!fs.existsSync(scriptPath)) {
+      logger.warn(`updateResume.py not found at ${scriptPath} — attaching original resume`);
+      return [{ filename: `${candidate.name.replace(/ /g,'_')}_Resume.pdf`, path: resumePath }];
+    }
+
+    const result = spawnSync('python3', [
+      scriptPath,
+      '--input',   resumePath,
+      '--output',  tailoredPath,
+      '--summary', summaryToUse,
+      '--skills',  newSkills || '',
+    ], { timeout: 30000, encoding: 'utf8' });
+
+    if (result.status !== 0) {
+      logger.warn(`Resume rebuild error: ${result.stderr} — attaching original`);
+      return [{ filename: `${candidate.name.replace(/ /g,'_')}_Resume.pdf`, path: resumePath }];
+    }
+
+    logger.info(`📄 Tailored resume built: ${path.basename(tailoredPath)}`);
+    return [{ filename: `${candidate.name.replace(/ /g,'_')}_Resume.pdf`, path: tailoredPath }];
+
+  } catch(e) {
+    logger.warn(`Resume rebuild failed: ${e.message} — attaching original`);
+    return [{ filename: `${candidate.name.replace(/ /g,'_')}_Resume.pdf`, path: resumePath }];
   }
-
-  return attachments;
 }
 
 function getDefaultBullets(role) {
@@ -212,8 +236,13 @@ function extractKeyDetails(description) {
                         text.match(/\b(remote|onsite|hybrid|new york|new jersey|texas|california|chicago|dallas|seattle|austin|atlanta)\b/i);
   const rateMatch     = text.match(/\$[\d,]+(?:\/hr|\/hour|k|K)?(?:\s*[-–]\s*\$[\d,]+(?:\/hr|\/hour|k|K)?)?/i);
   const durationMatch = text.match(/(\d+\s*(?:months?|years?|weeks?)\s*(?:contract|engagement)?)/i);
+  const INVALID_LOCATIONS = ['remote', 'on-site', 'onsite', 'hybrid', 'on site'];
+  const rawLocation = locationMatch ? locationMatch[1].trim() : null;
+  const location = rawLocation && !INVALID_LOCATIONS.includes(rawLocation.toLowerCase().replace(/·\s*/,'').trim())
+    ? rawLocation.replace(/·\s*/,'').trim()
+    : null;
   return {
-    location: locationMatch ? locationMatch[1].trim() : null,
+    location,
     rate:     rateMatch     ? rateMatch[0].trim()     : null,
     duration: durationMatch ? durationMatch[1].trim() : null,
   };
@@ -225,7 +254,8 @@ async function composeEmail(job, tailoredSummary, candidate) {
   const details = extractKeyDetails(job.fullDescription);
 
   // Subject: Submission "SkillSet" Local to "Location"
-  const skillSet = job.searchRole;
+  // Use CANDIDATE_ROLE from .env if set, otherwise use detected role
+  const skillSet = process.env.CANDIDATE_ROLE || job.searchRole;
   const location = details.location || candidate.location;
   const subject  = `Submission "${skillSet}" Local to "${location}"`;
 
@@ -277,7 +307,7 @@ ${details.duration ? `Duration   : ${details.duration}` : ''}
     ['Work Authorization', candidate.visa],
     ['Availability',       'Immediate'],
     ['Total Experience',   candidate.experience],
-    ['Salary',             details.rate || 'Open / As per market rate'],
+    ['Salary',             candidate.salary || details.rate || 'Open / As per market rate'],
   ];
 
   const candidateRowsHtml = detailRows.map(([label, value]) =>
@@ -345,7 +375,7 @@ ${details.duration ? `Duration   : ${details.duration}` : ''}
 </div>
 
 <p style="font-size:11px;color:#999;">
-  CC: ${escHtml(CC_EMAILS)}  &nbsp;|&nbsp;  BCC: ${escHtml(BCC_EMAIL)}
+  BCC: ${escHtml(BCC_EMAIL)}
 </p>
 
 </body>
@@ -374,13 +404,12 @@ async function sendApplicationEmails(jobPosts, onSent) {
   }
   if (!verified) throw new Error('Gmail authentication failed after 3 attempts.');
 
+  const ROLE_CANDIDATE = getRoleCandidate();
   const withEmail = jobPosts.filter(j => j.recruiterEmail);
   logger.info(`${withEmail.length} of ${jobPosts.length} post(s) have recruiter emails.`);
 
   for (const job of withEmail) {
-    // Get candidate for this role
-    const roleKey   = Object.keys(ROLE_CANDIDATE).find(k => job.searchRole.includes(k)) || 'JAVA DEVELOPER';
-    const candidate = ROLE_CANDIDATE[roleKey];
+    const candidate = ROLE_CANDIDATE[job.searchRole] || ROLE_CANDIDATE['GENERAL'] || getCandidateFromEnv();
 
     logger.info(`\n👤 Role: ${job.searchRole} → Candidate: ${candidate.name}`);
     logger.info(`📄 Resume: ${path.basename(candidate.resume)}`);
@@ -400,10 +429,10 @@ async function sendApplicationEmails(jobPosts, onSent) {
     const attachments = await buildTailoredResumeAttachment(job, candidate, tailoredSummary);
 
     const opts = {
-      from:        `"${candidate.name}" <${process.env.GMAIL_EMAIL}>`,
-      to:          job.recruiterEmail,
-      cc:          CC_EMAILS,
-      bcc:         BCC_EMAIL,
+      from:    `"${candidate.name}" <${process.env.GMAIL_EMAIL}>`,
+      to:      job.recruiterEmail,
+      ...(CC_EMAIL  ? { cc:  CC_EMAIL  } : {}),
+      ...(BCC_EMAIL ? { bcc: BCC_EMAIL } : {}),
       subject,
       text,
       html,
@@ -420,10 +449,11 @@ async function sendApplicationEmails(jobPosts, onSent) {
       results.push({ jobPost: job, success: false, error: err.message });
     }
 
-    // Cleanup temp summary files
+    // Cleanup temp tailored resume
     try {
-      const tempFile = path.resolve(`./assets/summary_${candidate.name.replace(/ /g,'_')}_temp.txt`);
-      if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+      const baseName    = path.basename(candidate.resume, '.pdf');
+      const tailoredPath = path.resolve(`./assets/${baseName}_Tailored.pdf`);
+      if (fs.existsSync(tailoredPath)) fs.unlinkSync(tailoredPath);
     } catch(e) {}
 
     await sleep(2500 + Math.random() * 1000);

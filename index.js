@@ -8,7 +8,15 @@ const logger                    = require('./src/logger');
 
 async function main() {
   logger.info('🚀 LinkedIn Job Automation Started');
-  logger.info('🔍 Searching: JAVA DEV | BUSINESS ANALYST | PROJECT MANAGER | DATA ANALYST — all C2C');
+  // Build search label from .env keywords
+  const keywords = [];
+  let k = 1;
+  while (process.env[`SEARCH_KEYWORD_${k}`]) {
+    keywords.push(process.env[`SEARCH_KEYWORD_${k}`]);
+    k++;
+  }
+  const searchLabel = keywords.join(' | ') || 'Job Search';
+  logger.info(`🔍 Searching: ${searchLabel}`);
 
   // Load history of already-contacted recruiters
   const history = loadHistory();
