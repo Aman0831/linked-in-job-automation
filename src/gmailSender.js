@@ -13,8 +13,8 @@ const fs         = require('fs');
 const logger     = require('./logger');
 
 const CC_EMAIL  = process.env.CC_EMAIL  || null;
-const BCC_EMAIL = process.env.BCC_EMAIL || 'kim@jpitstaffing.com';
-const TEAM_LEAD = process.env.TEAM_LEAD_EMAIL || 'quinn@jpitstaffing.com';
+const BCC_EMAIL = process.env.BCC_EMAIL || null;
+const TEAM_LEAD = process.env.TEAM_LEAD_EMAIL || null;
 
 // ── Candidate built from .env — change .env, no code changes needed ───────
 function getCandidateFromEnv() {
@@ -71,7 +71,11 @@ async function tailorResumePoints(jobDescription, searchRole) {
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 800,
@@ -94,7 +98,11 @@ async function tailorProfessionalSummary(jobDescription, candidate, searchRole) 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 300,
@@ -117,13 +125,17 @@ async function extractMissingSkills(jobDescription, candidateName) {
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 200,
         messages: [{
           role: 'user',
-          content: `Extract ONLY the specific technical skills, tools, and platforms mentioned in this job description that a marketing analytics professional might need. Return ONLY a comma-separated list of skills (max 8), no explanations. Focus on tools, software, platforms, and technical skills. If no specific skills are mentioned return empty string.\n\nJob Description:\n${jobDescription.slice(0, 2000)}`
+          content: `Extract ONLY the specific technical skills, tools, and platforms mentioned in this job description that a ${process.env.CANDIDATE_ROLE || 'software professional'} might need. Return ONLY a comma-separated list of skills (max 8), no explanations. Focus on tools, software, platforms, and technical skills. If no specific skills are mentioned return empty string.\n\nJob Description:\n${jobDescription.slice(0, 2000)}`
         }]
       })
     });
@@ -150,8 +162,13 @@ async function buildTailoredResumeAttachment(job, candidate, tailoredSummary) {
   if (newSkills) logger.info(`   New skills to add: ${newSkills}`);
 
   // Fallback summary if AI returns null
+  const domain    = process.env.CANDIDATE_DOMAIN      || 'software development';
+  const skills    = process.env.CANDIDATE_SKILLS_FOCUS || 'programming and problem solving';
+  const workAuth  = process.env.CANDIDATE_WORK_AUTH    || 'available immediately';
+  const isFresher = !candidate.experience || candidate.experience.toLowerCase() === 'fresher';
+  const experiencePart = isFresher ? '' : `with ${candidate.experience} years of experience `;
   const summaryToUse = tailoredSummary ||
-    `${candidate.name} is a results-driven marketing professional with ${candidate.experience || '3+'} years of experience in digital marketing and analytics. Skilled in campaign optimization, data-driven strategy, and cross-functional collaboration. Available immediately and authorized to work in the USA.`;
+    `${candidate.name} is a results-driven ${domain} professional ${experiencePart}skilled in ${skills}. ${workAuth}.`;
 
   logger.info(`📝 Summary: ${summaryToUse.slice(0, 80)}...`);
 
@@ -421,12 +438,21 @@ async function sendApplicationEmails(jobPosts, onSent) {
       continue;
     }
 
-    // AI tailoring — professional summary only (bullets removed from email)
-    logger.info(`🤖 Tailoring professional summary for ${candidate.name}...`);
-    const tailoredSummary = await tailorProfessionalSummary(job.fullDescription, candidate, job.searchRole);
+    // AI tailoring — skip if TAILOR_RESUME=no in .env
+    const shouldTailor = (process.env.TAILOR_RESUME || 'yes').toLowerCase() === 'yes';
+    let tailoredSummary = null;
+    let attachments;
+
+    if (shouldTailor) {
+      logger.info(`🤖 Tailoring professional summary for ${candidate.name}...`);
+      tailoredSummary = await tailorProfessionalSummary(job.fullDescription, candidate, job.searchRole);
+      attachments = await buildTailoredResumeAttachment(job, candidate, tailoredSummary);
+    } else {
+      logger.info(`📎 Skipping resume tailoring (TAILOR_RESUME=no) — attaching original`);
+      attachments = [{ filename: `${candidate.name.replace(/ /g,'_')}_Resume.pdf`, path: candidate.resume }];
+    }
 
     const { subject, html, text } = await composeEmail(job, tailoredSummary, candidate);
-    const attachments = await buildTailoredResumeAttachment(job, candidate, tailoredSummary);
 
     const opts = {
       from:    `"${candidate.name}" <${process.env.GMAIL_EMAIL}>`,

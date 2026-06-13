@@ -118,7 +118,7 @@ def extract_resume_data(pdf_path):
                 all_lines.extend(text.split('\n'))
 
     # Clean lines
-    lines = [l.strip() for l in all_lines if l.strip()]
+    lines = [l.replace('(cid:127)', '●').strip() for l in all_lines if l.strip()]
 
     if not lines:
         raise ValueError(f"Could not extract text from {pdf_path}")
@@ -136,16 +136,36 @@ def extract_resume_data(pdf_path):
             job_title = candidate
             idx += 1
 
-    # Collect contact lines (until we hit a section heading)
+    # Collect contact lines (until we hit a section heading or non-contact text)
     contact_lines = []
     while idx < len(lines) and not is_section_heading(lines[idx]):
         if looks_like_contact(lines[idx]) or '|' in lines[idx]:
             contact_lines.append(lines[idx])
-        idx += 1
+            idx += 1
+        else:
+            # Non-contact, non-heading text — this is body content (e.g. an
+            # unlabeled professional summary paragraph). Stop here so it
+            # becomes part of an implicit "PROFESSIONAL SUMMARY" section below.
+            break
 
     # ── Parse sections ──────────────────────────────────────────────────────
     sections = []  # list of { heading, lines[] }
     current_section = None
+
+    # If the next line isn't a recognized section heading AND no real
+    # PROFESSIONAL SUMMARY/OBJECTIVE/PROFILE heading exists later in the
+    # resume, treat this as an unlabeled intro/summary block so it isn't
+    # silently dropped. If a real summary heading exists later, leave these
+    # leading lines (usually job title/contact) to be dropped as before.
+    remaining_has_summary_heading = any(
+        is_section_heading(l) and
+        re.match(r'(PROFESSIONAL\s+)?SUMMARY|OBJECTIVE|PROFILE', l.strip().rstrip(':').upper())
+        for l in lines[idx:]
+    )
+
+    if (idx < len(lines) and not is_section_heading(lines[idx])
+            and not remaining_has_summary_heading):
+        current_section = {'heading': 'PROFESSIONAL SUMMARY', 'lines': []}
 
     while idx < len(lines):
         line = lines[idx]
@@ -302,6 +322,16 @@ def build_resume(input_path, output_path, new_summary, new_skills_str):
     if data['contact']:
         story.append(P(' | '.join(data['contact']), contact_s))
     story.append(HR())
+
+    # ── Ensure a Professional Summary exists ─────────────────────────────
+    has_summary_section = any(
+        re.match(r'(PROFESSIONAL\s+)?SUMMARY|OBJECTIVE|PROFILE', s['heading'].strip().upper())
+        for s in data['sections']
+    )
+    if not has_summary_section and new_summary:
+        story.append(P('PROFESSIONAL SUMMARY', section_s))
+        story.append(P(new_summary, body_s))
+        story += [SP(4), HR()]
 
     # ── Sections ─────────────────────────────────────────────────────────────
     for section in data['sections']:
