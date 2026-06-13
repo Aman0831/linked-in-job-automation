@@ -2,3 +2,9 @@ node_modules/
 config/.env
 assets/resume.pdf
 *.log
+assets/
+card-debug.html
+debug-*
+testapi.js
+src/.DS_Store
+.DS_Store
