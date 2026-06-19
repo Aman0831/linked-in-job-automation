@@ -24,11 +24,15 @@ function saveHistory(history) {
 }
 
 function alreadySent(email, history) {
-  return !!history[email.toLowerCase()];
+  const candidate = process.env.CANDIDATE_NAME || 'default';
+  const key = `${candidate.toLowerCase()}:${email.toLowerCase()}`;
+  return !!history[key];
 }
 
 function markSent(email, history) {
-  history[email.toLowerCase()] = new Date().toISOString();
+  const candidate = process.env.CANDIDATE_NAME || 'default';
+  const key = `${candidate.toLowerCase()}:${email.toLowerCase()}`;
+  history[key] = new Date().toISOString();
   saveHistory(history);
 }
 

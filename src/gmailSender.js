@@ -13,7 +13,9 @@ const fs         = require('fs');
 const logger     = require('./logger');
 
 const CC_EMAIL  = process.env.CC_EMAIL  || null;
-const BCC_EMAIL = process.env.BCC_EMAIL || null;
+const BCC_EMAIL = process.env.BCC_EMAIL
+  ? process.env.BCC_EMAIL.split(',').map(e => e.trim()).filter(Boolean)
+  : [];
 const TEAM_LEAD = process.env.TEAM_LEAD_EMAIL || null;
 
 // ── Candidate built from .env — change .env, no code changes needed ───────
@@ -392,7 +394,7 @@ ${details.duration ? `Duration   : ${details.duration}` : ''}
 </div>
 
 <p style="font-size:11px;color:#999;">
-  BCC: ${escHtml(BCC_EMAIL)}
+  BCC: ${escHtml(BCC_EMAIL.join(', '))}
 </p>
 
 </body>
@@ -458,7 +460,7 @@ async function sendApplicationEmails(jobPosts, onSent) {
       from:    `"${candidate.name}" <${process.env.GMAIL_EMAIL}>`,
       to:      job.recruiterEmail,
       ...(CC_EMAIL  ? { cc:  CC_EMAIL  } : {}),
-      ...(BCC_EMAIL ? { bcc: BCC_EMAIL } : {}),
+      ...(BCC_EMAIL.length > 0 ? { bcc: BCC_EMAIL } : {}),
       subject,
       text,
       html,
