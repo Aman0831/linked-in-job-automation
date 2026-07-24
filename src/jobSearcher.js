@@ -15,9 +15,10 @@ function getRolesFromEnv() {
 const ROLES = getRolesFromEnv();
 
 async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
-  const roleQuery = ROLES.map(r => r).join(' OR ');
-  const fullQuery = `(${roleQuery})`;
-  const searchUrl = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent(fullQuery)}&datePosted=past-24h&sortBy=date_posted&geoUrn=%5B%22103644278%22%5D`;
+  const roleQuery = ROLES.map(r => r.trim()).join(' OR ');
+  const exclusions = '-C2C -hotlist -"bench sales" -"bench candidate"';
+  const fullQuery = `(${roleQuery}) ${exclusions}`;
+  const searchUrl = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent(fullQuery)}&datePosted=%22past-24h%22&sortBy=%22date_posted%22&geoUrn=%5B%22103644278%22%5D&origin=FACETED_SEARCH`;
 
   logger.info(`Search query: ${fullQuery}`);
 
@@ -34,16 +35,26 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
   }
 
   logger.info(`Landed on: ${page.url()}`);
-  await sleep(6000);
+  await sleep(10000);
 
   logger.info('Scrolling to load posts...');
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 70; i++) {
     try { await page.evaluate(() => window.scrollBy(0, 800)); } catch(e) { break; }
     await sleep(1000);
   }
   try { await page.evaluate(() => window.scrollTo(0, 0)); } catch(e) {}
   await sleep(3000);
-
+  logger.info('Extracting posts...');
+try {
+  const pageState = await page.evaluate(() => ({
+    url: location.href,
+    bodyText: document.body.innerText.slice(0, 500),
+    postCount: document.querySelectorAll('li, div, article').length
+  }));
+  logger.info(`Page URL: ${pageState.url}`);
+  logger.info(`Page text preview: ${pageState.bodyText.replace(/\n/g,' ').slice(0,300)}`);
+  logger.info(`Total DOM elements: ${pageState.postCount}`);
+} catch(e) { logger.warn(`Debug error: ${e.message}`); }
   logger.info('Extracting posts...');
   let posts = [];
 
@@ -57,18 +68,22 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
 
       let cards = [];
 
-      // Strategy 1: find elements containing Like + Comment + Repost buttons
+      // Strategy 1: find elements containing post action buttons or hiring signals
       const allElements = Array.from(document.querySelectorAll('li, div, article'));
-      // Find smallest elements that contain Like+Comment+Repost
       const candidates = allElements.filter(el => {
         const text = el.innerText || '';
-        return (
+        const hasActionButtons = (
           text.includes('Like') &&
           text.includes('Comment') &&
-          (text.includes('Repost') || text.includes('Send')) &&
-          text.length > 100 &&
-          text.length < 8000
+          (text.includes('Repost') || text.includes('Send'))
         );
+        const hasHiringSignal = (
+          (text.includes('#hiring') || text.includes('hiring') || text.includes('Hiring')) &&
+          (text.includes('Follow') || text.includes('Connect') || text.includes('@'))
+        );
+        return (hasActionButtons || hasHiringSignal) &&
+          text.length > 100 &&
+          text.length < 12000;
       });
       // Keep only the smallest (most specific) elements — not parent wrappers
       cards = candidates.filter(el => {
@@ -80,7 +95,7 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
         cards = Array.from(document.querySelectorAll('[data-view-name]'))
           .filter(el => {
             const t = el.innerText || '';
-            return t.length > 100 && t.length < 8000;
+            return t.length > 100 && t.length < 12000;
           });
       }
 
@@ -89,8 +104,18 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
         cards = Array.from(document.querySelectorAll('li'))
           .filter(el => {
             const t = el.innerText || '';
-            return t.length > 150 && t.length < 8000 &&
+            return t.length > 100 && t.length < 12000 &&
               !t.includes('vjs-') && !t.includes('menu-item');
+          });
+      }
+
+      // Strategy 4: find any element containing an email address
+      if (cards.length === 0) {
+        const EMAIL_REGEX_S4 = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
+        cards = Array.from(document.querySelectorAll('div, li, article'))
+          .filter(el => {
+            const t = el.innerText || '';
+            return EMAIL_REGEX_S4.test(t) && t.length > 100 && t.length < 12000;
           });
       }
 
@@ -250,6 +275,46 @@ async function searchJobPosts(browser, { maxResults = 50 }, cookies) {
       logger.info(`Page: ${state.text.replace(/\n/g,' ').slice(0,300)}`);
     } catch(e2) {}
   }
+  // ── BLOCK 1: C2C/bench filter (MUST BE FIRST) ──────────────────────────
+const EXCLUDE_KEYWORDS = [
+  'c2c', 'corp to corp', 'corp-to-corp', 'hotlist',
+  'bench sales', 'bench candidate', 'on bench',
+  'subcontract', 'sub-vendor', 'available on bench',
+  'consultant available', 'seeking job',
+  'open to work', 'looking for job',
+  'bangalore', 'bengaluru', 'hyderabad', 'pune', 'noida',
+  'gurugram', 'gurgaon', 'chennai', 'mumbai', 'kolkata',
+  'ahmedabad', 'jaipur', 'kochi', 'coimbatore', 'indore',
+  'toronto', 'ontario', 'london, uk', 'manchester',
+  'sydney', 'melbourne', 'dubai', 'abu dhabi',
+  'berlin', 'frankfurt', 'amsterdam', 'paris',
+  'kuala lumpur', 'jakarta', 'manila'
+];
+
+const beforeFilter = posts.length;
+posts = posts.filter(p => {
+  const text = p.fullDescription.toLowerCase();
+  return !EXCLUDE_KEYWORDS.some(kw => text.includes(kw));
+});
+logger.info(`🚫 Filtered out ${beforeFilter - posts.length} C2C/hotlist/bench posts`);
+
+// ── BLOCK 2: USA whitelist filter (MUST BE AFTER BLOCK 1) ───────────────
+const USA_INDICATORS = [
+  'united states', ' usa', ' u.s.', 'remote us', 'us only',
+  'new york', 'california', 'texas', 'florida', 'illinois',
+  'new jersey', 'washington', 'georgia', 'north carolina',
+  'virginia', 'pennsylvania', 'ohio', 'michigan', 'arizona',
+  ' ny ', ' ca ', ' tx ', ' fl ', ' nj ', ' wa ', ' il ',
+  'w2', 'authorized to work in the us',
+  'must be located in', 'onsite us', 'hybrid us'
+];
+
+posts = posts.filter(p => {
+  const text = p.fullDescription.toLowerCase();
+  if (p.recruiterEmail) return true;
+  return USA_INDICATORS.some(indicator => text.includes(indicator));
+});
+logger.info(`📍 After USA filter: ${posts.length} posts remaining`);
 
   posts = posts.map(p => ({ ...p, searchRole: detectRole(p.fullDescription) }));
 
